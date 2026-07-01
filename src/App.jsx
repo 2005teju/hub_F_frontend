@@ -29,6 +29,13 @@ const ProtectedRoute = ({ children, role }) => {
 };
 
 function App() {
+  // ── NEW: shared logout handler passed to all dashboards ──
+  const handleLogout = () => {
+    localStorage.removeItem("currentUser");
+    localStorage.removeItem("token");
+    window.location.href = "/login";
+  };
+
   return (
     <Router>
       <Navbar />
@@ -47,7 +54,7 @@ function App() {
             path="/admin"
             element={
               <ProtectedRoute role="admin">
-                <AdminDashboard />
+                <AdminDashboard onLogout={handleLogout} />
               </ProtectedRoute>
             }
           />
@@ -56,7 +63,7 @@ function App() {
             path="/owner"
             element={
               <ProtectedRoute role="owner">
-                <OwnerDashboard />
+                <OwnerDashboard onLogout={handleLogout} />
               </ProtectedRoute>
             }
           />
@@ -65,7 +72,7 @@ function App() {
             path="/user"
             element={
               <ProtectedRoute role="user">
-                <UserDashboard />
+                <UserDashboard onLogout={handleLogout} />
               </ProtectedRoute>
             }
           />
@@ -78,5 +85,3 @@ function App() {
 }
 
 export default App;
-
-
