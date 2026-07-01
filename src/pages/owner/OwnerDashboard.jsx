@@ -185,6 +185,28 @@ const OwnerDashboard = ({ onLogout }) => {
     }
   };
 
+  // ── NEW: accept an order ──
+  const handleAcceptOrder = async (id) => {
+    try {
+      await api.updateOrderStatus(id, "Accepted");
+      loadData();
+      alert("Order accepted successfully");
+    } catch (err) {
+      alert(err.message || "Failed to accept order.");
+    }
+  };
+
+  // ── NEW: reject an order ──
+  const handleRejectOrder = async (id) => {
+    try {
+      await api.updateOrderStatus(id, "Rejected");
+      loadData();
+      alert("Order rejected successfully");
+    } catch (err) {
+      alert(err.message || "Failed to reject order.");
+    }
+  };
+
   const navItems = [
     { icon: "📊", label: "Dashboard", key: "dashboard" },
     { icon: "🏪", label: "Shop Details", key: "shopDetails" },
@@ -706,6 +728,34 @@ const OwnerDashboard = ({ onLogout }) => {
                               </p>
                             ))}
                           </div>
+
+                          {/* ── NEW: Accept / Reject controls ── */}
+                          {order.status === "Accepted" ||
+                          order.status === "Rejected" ||
+                          order.status === "Delivered" ? null : (
+                            <div
+                              style={{
+                                display: "flex",
+                                gap: 10,
+                                marginTop: 15,
+                              }}
+                            >
+                              <button
+                                className="btn"
+                                style={{ margin: 0, background: "#16a34a" }}
+                                onClick={() => handleAcceptOrder(order._id)}
+                              >
+                                Accept
+                              </button>
+                              <button
+                                className="delete-btn"
+                                style={{ width: "100%", margin: 0 }}
+                                onClick={() => handleRejectOrder(order._id)}
+                              >
+                                Reject
+                              </button>
+                            </div>
+                          )}
                         </div>
                       ))
                     )}

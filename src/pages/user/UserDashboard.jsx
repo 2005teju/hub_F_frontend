@@ -42,9 +42,13 @@ const UserDashboard = ({ onLogout }) => {
   // ── NEW: this buyer's own orders, for My Orders / Order History ──
   const [myOrders, setMyOrders] = useState([]);
 
+  // ── NEW: notifications for this buyer (e.g. order status updates) ──
+  const [notifications, setNotifications] = useState([]);
+
   useEffect(() => {
     loadShops();
     loadMyOrders();
+    loadNotifications();
   }, []);
 
   const loadShops = async () => {
@@ -83,6 +87,16 @@ const UserDashboard = ({ onLogout }) => {
       );
     } catch (err) {
       console.error("Failed to load my orders:", err.message);
+    }
+  };
+
+  // ── NEW: load notifications for this buyer (e.g. "order accepted") ──
+  const loadNotifications = async () => {
+    try {
+      const data = await api.getNotifications();
+      setNotifications(data);
+    } catch (err) {
+      console.error("Failed to load notifications:", err.message);
     }
   };
 
@@ -225,6 +239,7 @@ const UserDashboard = ({ onLogout }) => {
     { icon: "🧾", label: "My Orders", key: "myOrders" },
     { icon: "📜", label: "Order History", key: "orderHistory" },
     { icon: "🏪", label: "Nearby Shops", key: "nearbyShops" },
+    { icon: "🔔", label: "Notifications", key: "notifications" },
     { icon: "👤", label: "Profile", key: "profile" },
     { icon: "⚙️", label: "Settings", key: "settings" },
   ];
@@ -863,6 +878,26 @@ const UserDashboard = ({ onLogout }) => {
                   <button className="btn" onClick={startNewOrder}>
                     Start New Order
                   </button>
+                </div>
+              )}
+            </div>
+          )}
+
+          {active === "notifications" && (
+            <div className="table-box">
+              <h2>Notifications</h2>
+              {notifications.length === 0 ? (
+                <p style={{ marginTop: 12 }}>No notifications.</p>
+              ) : (
+                <div style={{ marginTop: 12 }}>
+                  {notifications.map((n) => (
+                    <div key={n._id} className="card" style={{ marginBottom: 10 }}>
+                      <p>🔔 {n.message}</p>
+                      <small className="shop-detail">
+                        {new Date(n.createdAt).toLocaleString()}
+                      </small>
+                    </div>
+                  ))}
                 </div>
               )}
             </div>
