@@ -1,16 +1,10 @@
-// Central place that talks to the real backend / MongoDB database.
-// Every page should use this instead of localStorage for any data
-// that needs to be saved permanently in the database.
-
 const BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:5000";
 
-// Always attach the JWT token (if we have one) so protected routes work
 const authHeaders = () => {
   const token = localStorage.getItem("token");
   return token ? { Authorization: `Bearer ${token}` } : {};
 };
 
-// Generic request helper. Throws an Error with the backend's message on failure.
 async function request(path, { method = "GET", body, auth = false } = {}) {
   const res = await fetch(`${BASE_URL}/api${path}`, {
     method,
@@ -64,6 +58,13 @@ export const api = {
   // ----- Orders -----
   placeOrder: (payload) => request("/orders", { method: "POST", body: payload, auth: true }),
   getMyOrders: () => request("/orders/mine", { auth: true }),
+  getShopOrders: () => request("/orders/shop", { auth: true }),
+  updateOrderStatus: (id, status) =>
+    request(`/orders/${id}/status`, { method: "PATCH", body: { status }, auth: true }),
+
+  // ----- Notifications (owner) -----
+  getNotifications: () => request("/notifications", { auth: true }),
+  markNotificationRead: (id) => request(`/notifications/${id}/read`, { method: "PATCH", auth: true }),
 
   // ----- Messages (Contact page) -----
   sendMessage: (payload) => request("/messages", { method: "POST", body: payload }),

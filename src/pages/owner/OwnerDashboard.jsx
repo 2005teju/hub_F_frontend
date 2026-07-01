@@ -11,7 +11,13 @@ const CATEGORY_OPTIONS = [
   "Beverages",
   "Personal Care",
   "Household",
-  "Others",
+  "Stationery",
+  "Clothing",
+  "Footwear",
+  "Electronics",
+  "Hand Products",
+  "Other",
+
 ];
 
 const OwnerDashboard = ({ onLogout }) => {
@@ -51,11 +57,9 @@ const OwnerDashboard = ({ onLogout }) => {
 
   const loadData = async () => {
     try {
-      // Approval status comes straight from the database (User.approved)
       const me = await api.getMe();
       setApproved(me.user.approved || false);
 
-      // Shop details from the database
       const shopRes = await api.getMyShop();
       if (shopRes.shop) {
         setOwner({
@@ -69,49 +73,35 @@ const OwnerDashboard = ({ onLogout }) => {
         });
       }
 
-      // Products from the database (only this owner's own products)
       if (shopRes.shop && shopRes.shop.verified) {
         const myProducts = await api.getMyProducts();
         setProducts(myProducts);
       } else {
         setProducts([]);
       }
+
+      // ✅ Now from MongoDB, not localStorage
+      const myNotifications = await api.getNotifications();
+      setNotifications(myNotifications);
+
+      const myShopOrders = await api.getShopOrders();
+      setShopOrders(myShopOrders);
+
     } catch (err) {
       console.error("Failed to load owner data:", err.message);
     }
-
-    // NOTE: the backend does not yet have endpoints for "orders received by
-    // shop" or "owner notifications" (only a per-user order history exists).
-    // Until that's added on the backend, these two stay on localStorage so
-    // the UI doesn't break - everything else above is now real database data.
-    const allNotifications =
-      JSON.parse(localStorage.getItem("notifications")) || [];
-    setNotifications(
-      allNotifications
-        .filter((n) => n.ownerEmail === currentUser.email)
-        .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
-    );
-
-    const allOrders = JSON.parse(localStorage.getItem("orders")) || [];
-    setShopOrders(
-      allOrders
-        .filter((o) => o.ownerEmail === currentUser.email)
-        .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
-    );
   };
 
-  const markNotificationRead = (id) => {
-    const allNotifications =
-      JSON.parse(localStorage.getItem("notifications")) || [];
-    const updated = allNotifications.map((n) =>
-      n.id === id ? { ...n, read: true } : n
-    );
-    localStorage.setItem("notifications", JSON.stringify(updated));
-    setNotifications(
-      updated
-        .filter((n) => n.ownerEmail === currentUser.email)
-        .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
-    );
+  // ✅ Now updates MongoDB, not localStorage
+  const markNotificationRead = async (id) => {
+    try {
+      await api.markNotificationRead(id);
+      setNotifications((prev) =>
+        prev.map((n) => (n._id === id ? { ...n, read: true } : n))
+      );
+    } catch (err) {
+      console.error("Failed to mark notification as read:", err.message);
+    }
   };
 
   const unreadNotificationCount = notifications.filter((n) => !n.read).length;
@@ -152,7 +142,6 @@ const OwnerDashboard = ({ onLogout }) => {
     }
 
     try {
-      // Saves the shop in MongoDB and submits it for admin verification
       const res = await api.saveShop(shopData);
       setOwner({ ...shopData, verified: res.shop.verified });
       alert(res.message || "Shop details saved successfully waiting for admin verification.");
@@ -168,7 +157,6 @@ const OwnerDashboard = ({ onLogout }) => {
     }
 
     try {
-      // Saves the product in MongoDB
       const res = await api.addProduct(form);
       setProducts((prev) => [...prev, res.product]);
 
@@ -679,27 +667,19 @@ const OwnerDashboard = ({ onLogout }) => {
                   ) : (
                     notifications.map((n) => (
                       <div
-                        key={n.id}
-                        className={`notification-row ${
-                          n.read ? "" : "unread"
-                        }`}
+                        key={n._id}
+                        className={`notification-row ${n.read ? "" : "unread"}`}
                       >
                         <div>
                           <p style={{ margin: 0 }}>{n.message}</p>
-                          <p
-                            style={{
-                              margin: "4px 0 0",
-                              fontSize: 12,
-                              color: "#6b7280",
-                            }}
-                          >
+                          <p style={{ margin: "4px 0 0", fontSize: 12, color: "#6b7280" }}>
                             {new Date(n.createdAt).toLocaleString()}
                           </p>
                         </div>
                         {!n.read && (
                           <button
                             className="mark-read-btn"
-                            onClick={() => markNotificationRead(n.id)}
+                            onClick={() => markNotificationRead(n._id)}
                           >
                             Mark as read
                           </button>
@@ -714,15 +694,10 @@ const OwnerDashboard = ({ onLogout }) => {
                       <p>No orders yet.</p>
                     ) : (
                       shopOrders.map((order) => (
-                        <div key={order.id} className="product-card">
-                          <h3>{order.buyerName}</h3>
+                        <div key={order._id} className="product-card">
+                          <h3>{order.userName}</h3>
                           <p><strong>Total: ₹{order.total}</strong></p>
-                          <p><strong>Payment:</strong> {order.paymentLabel}</p>
-                          <p>
-                            {order.deliveryAvailable
-                              ? "🚚 Delivery Requested"
-                              : "🏃 Pickup Only"}
-                          </p>
+                          <p><strong>Payment:</strong> {order.paymentMethod}</p>
                           <p><strong>Status:</strong> {order.status}</p>
                           <div style={{ textAlign: "left", marginTop: 10 }}>
                             {order.items.map((item, i) => (
@@ -756,10 +731,10 @@ const OwnerDashboard = ({ onLogout }) => {
                       </thead>
                       <tbody>
                         {shopOrders.map((order) => (
-                          <tr key={order.id}>
-                            <td style={{ padding: 12, borderBottom: "1px solid #eee" }}>{order.buyerName}</td>
+                          <tr key={order._id}>
+                            <td style={{ padding: 12, borderBottom: "1px solid #eee" }}>{order.userName}</td>
                             <td style={{ padding: 12, borderBottom: "1px solid #eee" }}>₹{order.total}</td>
-                            <td style={{ padding: 12, borderBottom: "1px solid #eee" }}>{order.paymentLabel}</td>
+                            <td style={{ padding: 12, borderBottom: "1px solid #eee" }}>{order.paymentMethod}</td>
                             <td style={{ padding: 12, borderBottom: "1px solid #eee" }}>{order.status}</td>
                             <td style={{ padding: 12, borderBottom: "1px solid #eee" }}>
                               {new Date(order.createdAt).toLocaleString()}
