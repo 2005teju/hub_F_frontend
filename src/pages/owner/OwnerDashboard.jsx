@@ -20,6 +20,53 @@ const CATEGORY_OPTIONS = [
 
 ];
 
+// ── NEW: shop details validators ──
+
+// Exactly 10 digits, numbers only (Indian mobile format)
+function getPhoneError(phone) {
+  const trimmed = (phone || "").trim();
+  if (!trimmed) return "Phone number is required.";
+  if (!/^\d+$/.test(trimmed)) return "Phone number must contain digits only (0-9).";
+  if (trimmed.length !== 10) return "Phone number must be exactly 10 digits.";
+  return null;
+}
+
+// Indian GST format: 2-digit state code + 10-char PAN + 1 entity code + Z + 1 checksum
+// e.g. 29AAAAA0000A1Z5
+const GST_REGEX = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$/;
+
+function getGstError(gstId) {
+  const trimmed = (gstId || "").trim().toUpperCase();
+  if (!trimmed) return "GST ID is required.";
+  if (trimmed.length !== 15) return "GST ID must be exactly 15 characters.";
+  if (!GST_REGEX.test(trimmed)) {
+    return "Invalid GST ID format (e.g. 29AAAAA0000A1Z5).";
+  }
+  return null;
+}
+
+// Customer/trade license: alphanumeric, 5-20 characters, no special symbols
+const LICENSE_REGEX = /^[A-Za-z0-9]{5,20}$/;
+
+function getLicenseError(license) {
+  const trimmed = (license || "").trim();
+  if (!trimmed) return "Customer license number is required.";
+  if (!LICENSE_REGEX.test(trimmed)) {
+    return "License number must be 5-20 letters/numbers only, no special characters.";
+  }
+  return null;
+}
+
+// Letters and spaces only for owner name
+function getOwnerNameError(name) {
+  const trimmed = (name || "").trim();
+  if (!trimmed) return "Owner name is required.";
+  if (!/^[A-Za-z][A-Za-z\s'.-]*$/.test(trimmed)) {
+    return "Name can only contain letters, spaces, and ' . -";
+  }
+  return null;
+}
+
 const OwnerDashboard = ({ onLogout }) => {
   const currentUser =
     JSON.parse(localStorage.getItem("currentUser")) || {};
@@ -40,6 +87,16 @@ const OwnerDashboard = ({ onLogout }) => {
   const [products, setProducts] = useState([]);
   const [notifications, setNotifications] = useState([]);
   const [shopOrders, setShopOrders] = useState([]);
+
+  // ── NEW: live validation error messages for the shop details form ──
+  const [ownerErrors, setOwnerErrors] = useState({
+    name: "",
+    phone: "",
+    shopName: "",
+    address: "",
+    gstId: "",
+    customerLicense: "",
+  });
 
   const [form, setForm] = useState({
     name: "",
@@ -108,7 +165,27 @@ const OwnerDashboard = ({ onLogout }) => {
 
   const handleOwnerChange = (e) => {
     const { name, value } = e.target;
-    setOwner((prev) => ({ ...prev, [name]: value }));
+    let nextValue = value;
+
+    // ── NEW: light formatting as the user types ──
+    if (name === "phone") {
+      nextValue = value.replace(/\D/g, "").slice(0, 10);
+    } else if (name === "gstId") {
+      nextValue = value.toUpperCase().slice(0, 15);
+    }
+
+    setOwner((prev) => ({ ...prev, [name]: nextValue }));
+
+    // ── NEW: live validation per field ──
+    const validators = {
+      name: getOwnerNameError,
+      phone: getPhoneError,
+      gstId: getGstError,
+      customerLicense: getLicenseError,
+    };
+    if (validators[name]) {
+      setOwnerErrors((prev) => ({ ...prev, [name]: validators[name](nextValue) || "" }));
+    }
   };
 
   const handleChange = (e) => {
@@ -125,7 +202,7 @@ const OwnerDashboard = ({ onLogout }) => {
       phone: owner.phone.trim(),
       shopName: owner.shopName.trim(),
       address: owner.address.trim(),
-      gstId: owner.gstId.trim(),
+      gstId: owner.gstId.trim().toUpperCase(),
       customerLicense: owner.customerLicense.trim(),
     };
 
@@ -141,12 +218,38 @@ const OwnerDashboard = ({ onLogout }) => {
       return;
     }
 
+    // ── NEW: run full format validation before submitting ──
+    const nameError = getOwnerNameError(shopData.name);
+    const phoneError = getPhoneError(shopData.phone);
+    const gstError = getGstError(shopData.gstId);
+    const licenseError = getLicenseError(shopData.customerLicense);
+
+    setOwnerErrors((prev) => ({
+      ...prev,
+      name: nameError || "",
+      phone: phoneError || "",
+      gstId: gstError || "",
+      customerLicense: licenseError || "",
+    }));
+
+    if (nameError || phoneError || gstError || licenseError) {
+      alert("Please fix the highlighted fields before submitting.");
+      return;
+    }
+
     try {
       const res = await api.saveShop(shopData);
       setOwner({ ...shopData, verified: res.shop.verified });
       alert(res.message || "Shop details saved successfully waiting for admin verification.");
     } catch (err) {
-      alert(err.message || "Failed to save shop details.");
+      // ── NEW: surface duplicate GST ID errors from the backend inline,
+      // under the GST field, instead of a generic alert ──
+      const message = err.message || "";
+      if (message.toLowerCase().includes("gst")) {
+        setOwnerErrors((prev) => ({ ...prev, gstId: message }));
+      } else {
+        alert(message || "Failed to save shop details.");
+      }
     }
   };
 
@@ -407,6 +510,16 @@ const OwnerDashboard = ({ onLogout }) => {
           font-size:13px;
           white-space:nowrap;
         }
+        .input.input-error{
+          border-color:#ef4444;
+          background:#fef2f2;
+        }
+        .field-error-msg{
+          margin:-10px 0 12px 0;
+          font-size:12.5px;
+          color:#ef4444;
+          font-weight:600;
+        }
       `}</style>
 
       <div className="dash-layout">
@@ -483,16 +596,37 @@ const OwnerDashboard = ({ onLogout }) => {
                         placeholder="Owner Name"
                         value={owner.name || ""}
                         onChange={handleOwnerChange}
-                        className="input"
+                        onBlur={() =>
+                          setOwnerErrors((prev) => ({
+                            ...prev,
+                            name: getOwnerNameError(owner.name) || "",
+                          }))
+                        }
+                        className={`input ${ownerErrors.name ? "input-error" : ""}`}
                       />
+                      {ownerErrors.name && (
+                        <div className="field-error-msg">{ownerErrors.name}</div>
+                      )}
+
                       <input
                         type="tel"
                         name="phone"
-                        placeholder="Phone Number"
+                        placeholder="Phone Number (10 digits)"
                         value={owner.phone || ""}
                         onChange={handleOwnerChange}
-                        className="input"
+                        onBlur={() =>
+                          setOwnerErrors((prev) => ({
+                            ...prev,
+                            phone: getPhoneError(owner.phone) || "",
+                          }))
+                        }
+                        className={`input ${ownerErrors.phone ? "input-error" : ""}`}
+                        inputMode="numeric"
                       />
+                      {ownerErrors.phone && (
+                        <div className="field-error-msg">{ownerErrors.phone}</div>
+                      )}
+
                       <input
                         type="text"
                         name="shopName"
@@ -509,22 +643,43 @@ const OwnerDashboard = ({ onLogout }) => {
                         onChange={handleOwnerChange}
                         className="input"
                       />
+
                       <input
                         type="text"
                         name="gstId"
-                        placeholder="GST ID"
+                        placeholder="GST ID (e.g. 29AAAAA0000A1Z5)"
                         value={owner.gstId || ""}
                         onChange={handleOwnerChange}
-                        className="input"
+                        onBlur={() =>
+                          setOwnerErrors((prev) => ({
+                            ...prev,
+                            gstId: getGstError(owner.gstId) || "",
+                          }))
+                        }
+                        className={`input ${ownerErrors.gstId ? "input-error" : ""}`}
                       />
+                      {ownerErrors.gstId && (
+                        <div className="field-error-msg">{ownerErrors.gstId}</div>
+                      )}
+
                       <input
                         type="text"
                         name="customerLicense"
                         placeholder="Customer License Number"
                         value={owner.customerLicense || ""}
                         onChange={handleOwnerChange}
-                        className="input"
+                        onBlur={() =>
+                          setOwnerErrors((prev) => ({
+                            ...prev,
+                            customerLicense: getLicenseError(owner.customerLicense) || "",
+                          }))
+                        }
+                        className={`input ${ownerErrors.customerLicense ? "input-error" : ""}`}
                       />
+                      {ownerErrors.customerLicense && (
+                        <div className="field-error-msg">{ownerErrors.customerLicense}</div>
+                      )}
+
                       <button className="btn" onClick={saveShopDetails}>
                         Submit for Verification
                       </button>

@@ -8,6 +8,77 @@ const UPI_APPS = [
   { id: "other", label: "Other UPI App", emoji: "💳" },
 ];
 
+// ── NEW: payment field validators ──
+
+// Strips spaces/hyphens, checks 13-19 digits (covers Visa/Mastercard/Amex/RuPay etc.)
+function getCardNumberError(number) {
+  const digitsOnly = (number || "").replace(/[\s-]/g, "");
+  if (!digitsOnly) return "Card number is required.";
+  if (!/^\d+$/.test(digitsOnly)) return "Card number must contain digits only.";
+  if (digitsOnly.length < 13 || digitsOnly.length > 19) {
+    return "Card number must be 13-19 digits.";
+  }
+  return null;
+}
+
+// Letters and spaces only (allows names like "O'Brien" / hyphenated surnames)
+function getCardNameError(name) {
+  const trimmed = (name || "").trim();
+  if (!trimmed) return "Name on card is required.";
+  if (!/^[A-Za-z][A-Za-z\s'.-]*$/.test(trimmed)) {
+    return "Name can only contain letters, spaces, and ' . -";
+  }
+  return null;
+}
+
+// MM/YY format, valid month, not expired
+function getExpiryError(expiry) {
+  const trimmed = (expiry || "").trim();
+  if (!trimmed) return "Expiry date is required.";
+
+  const match = /^(\d{2})\/(\d{2})$/.exec(trimmed);
+  if (!match) return "Expiry must be in MM/YY format.";
+
+  const month = parseInt(match[1], 10);
+  const year = parseInt(match[2], 10) + 2000;
+
+  if (month < 1 || month > 12) return "Expiry month must be between 01 and 12.";
+
+  const now = new Date();
+  const currentYear = now.getFullYear();
+  const currentMonth = now.getMonth() + 1;
+
+  if (year < currentYear || (year === currentYear && month < currentMonth)) {
+    return "This card has expired.";
+  }
+
+  return null;
+}
+
+// 3-4 digit CVV (4 for Amex-style cards)
+function getCvvError(cvv) {
+  const trimmed = (cvv || "").trim();
+  if (!trimmed) return "CVV is required.";
+  if (!/^\d{3,4}$/.test(trimmed)) return "CVV must be 3 or 4 digits.";
+  return null;
+}
+
+// username@handle — letters/numbers/./-/_ before @, handle after
+const UPI_ID_REGEX = /^[A-Za-z0-9.\-_]{2,}@[A-Za-z][A-Za-z0-9]{1,}$/;
+
+function getUpiIdError(upiId) {
+  const trimmed = (upiId || "").trim();
+  if (!trimmed) return "UPI ID is required.";
+  if (/\s/.test(trimmed)) return "UPI ID cannot contain spaces.";
+  if ((trimmed.match(/@/g) || []).length !== 1) {
+    return "UPI ID must contain exactly one '@'.";
+  }
+  if (!UPI_ID_REGEX.test(trimmed)) {
+    return "Enter a valid UPI ID, e.g. name@okhdfcbank";
+  }
+  return null;
+}
+
 const UserDashboard = ({ onLogout }) => {
   const currentUser =
     JSON.parse(localStorage.getItem("currentUser")) || {};
@@ -38,6 +109,19 @@ const UserDashboard = ({ onLogout }) => {
   const [upiApp, setUpiApp] = useState("phonepe");
   const [lastOrder, setLastOrder] = useState(null);
   const [orderTotal, setOrderTotal] = useState(0);
+
+  // ── NEW: snapshot of cart items at the moment the order was placed,
+  // used to render the bill receipt even if the backend response shape varies ──
+  const [receiptItems, setReceiptItems] = useState([]);
+
+  // ── NEW: live validation error messages for the payment fields ──
+  const [paymentErrors, setPaymentErrors] = useState({
+    number: "",
+    name: "",
+    expiry: "",
+    cvv: "",
+    upiId: "",
+  });
 
   // ── NEW: this buyer's own orders, for My Orders / Order History ──
   const [myOrders, setMyOrders] = useState([]);
@@ -153,7 +237,43 @@ const UserDashboard = ({ onLogout }) => {
 
   const handleCardChange = (e) => {
     const { name, value } = e.target;
-    setCardDetails((prev) => ({ ...prev, [name]: value }));
+    let nextValue = value;
+
+    // ── NEW: light auto-formatting as the user types ──
+    if (name === "number") {
+      // digits only, max 19, grouped in 4s for readability
+      nextValue = value
+        .replace(/\D/g, "")
+        .slice(0, 19)
+        .replace(/(.{4})/g, "$1 ")
+        .trim();
+    } else if (name === "expiry") {
+      // digits only, auto-insert "/" after MM
+      const digits = value.replace(/\D/g, "").slice(0, 4);
+      nextValue = digits.length > 2 ? `${digits.slice(0, 2)}/${digits.slice(2)}` : digits;
+    } else if (name === "cvv") {
+      nextValue = value.replace(/\D/g, "").slice(0, 4);
+    }
+
+    setCardDetails((prev) => ({ ...prev, [name]: nextValue }));
+
+    // ── NEW: live validation per field ──
+    const validators = {
+      number: getCardNumberError,
+      name: getCardNameError,
+      expiry: getExpiryError,
+      cvv: getCvvError,
+    };
+    if (validators[name]) {
+      setPaymentErrors((prev) => ({ ...prev, [name]: validators[name](nextValue) || "" }));
+    }
+  };
+
+  // ── NEW: UPI ID change handler with live validation ──
+  const handleUpiIdChange = (e) => {
+    const value = e.target.value;
+    setUpiId(value);
+    setPaymentErrors((prev) => ({ ...prev, upiId: getUpiIdError(value) || "" }));
   };
 
   const placeOrder = async () => {
@@ -163,18 +283,31 @@ const UserDashboard = ({ onLogout }) => {
     }
 
     if (paymentMethod === "card") {
-      if (
-        !cardDetails.number ||
-        !cardDetails.name ||
-        !cardDetails.expiry ||
-        !cardDetails.cvv
-      ) {
-        alert("Please fill all card details.");
+      // ── NEW: run full validation on every card field before submitting ──
+      const numberError = getCardNumberError(cardDetails.number);
+      const nameError = getCardNameError(cardDetails.name);
+      const expiryError = getExpiryError(cardDetails.expiry);
+      const cvvError = getCvvError(cardDetails.cvv);
+
+      setPaymentErrors((prev) => ({
+        ...prev,
+        number: numberError || "",
+        name: nameError || "",
+        expiry: expiryError || "",
+        cvv: cvvError || "",
+      }));
+
+      if (numberError || nameError || expiryError || cvvError) {
+        alert("Please fix the highlighted card details before continuing.");
         return;
       }
     } else if (paymentMethod === "upi") {
-      if (!upiId) {
-        alert("Please enter your UPI ID.");
+      // ── NEW: run full validation on the UPI ID before submitting ──
+      const upiIdError = getUpiIdError(upiId);
+      setPaymentErrors((prev) => ({ ...prev, upiId: upiIdError || "" }));
+
+      if (upiIdError) {
+        alert("Please enter a valid UPI ID before continuing.");
         return;
       }
     } else if (paymentMethod === "cod") {
@@ -207,6 +340,8 @@ const UserDashboard = ({ onLogout }) => {
       });
 
       setOrderTotal(cartTotal);
+      // ── NEW: snapshot the items actually ordered, for the receipt ──
+      setReceiptItems(cart.map((item) => ({ name: item.name, price: item.price })));
       setLastOrder({
         ...res.order,
         paymentLabel,
@@ -230,8 +365,92 @@ const UserDashboard = ({ onLogout }) => {
     setUpiId("");
     setUpiApp("phonepe");
     setLastOrder(null);
+    setReceiptItems([]);
+    setPaymentErrors({ number: "", name: "", expiry: "", cvv: "", upiId: "" });
     setView("location");
     loadShops();
+  };
+
+  // ── NEW: opens a clean, printable bill receipt in a new window ──
+  // (the browser's "Print" dialog lets the user Save as PDF too)
+  const printReceipt = () => {
+    const orderId = lastOrder?._id || lastOrder?.id || "—";
+    const orderDate = lastOrder?.createdAt
+      ? new Date(lastOrder.createdAt)
+      : new Date();
+
+    const itemsHtml = receiptItems
+      .map(
+        (item) => `
+          <tr>
+            <td style="padding:8px 0;border-bottom:1px solid #eee;">${item.name}</td>
+            <td style="padding:8px 0;border-bottom:1px solid #eee;text-align:right;">₹${item.price}</td>
+          </tr>`
+      )
+      .join("");
+
+    const receiptWindow = window.open("", "_blank", "width=420,height=650");
+    if (!receiptWindow) {
+      alert("Please allow pop-ups to view/print the receipt.");
+      return;
+    }
+
+    receiptWindow.document.write(`
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <title>Receipt - ${orderId}</title>
+          <style>
+            * { box-sizing:border-box; }
+            body {
+              font-family: 'Courier New', monospace;
+              padding: 24px;
+              color: #111827;
+              max-width: 380px;
+              margin: 0 auto;
+            }
+            h1 { font-size: 20px; text-align:center; margin-bottom: 4px; }
+            .sub { text-align:center; color:#666; font-size:12px; margin-bottom:20px; }
+            .row { display:flex; justify-content:space-between; font-size:13px; margin:4px 0; }
+            hr { border:none; border-top: 1px dashed #999; margin: 14px 0; }
+            table { width:100%; border-collapse:collapse; font-size:13px; }
+            .total-row { display:flex; justify-content:space-between; font-size:16px; font-weight:bold; margin-top:10px; }
+            .footer { text-align:center; font-size:12px; color:#666; margin-top:20px; }
+          </style>
+        </head>
+        <body>
+          <h1>🏪 NearbyHub</h1>
+          <p class="sub">Payment Receipt</p>
+
+          <div class="row"><span>Order ID</span><span>${orderId}</span></div>
+          <div class="row"><span>Date</span><span>${orderDate.toLocaleString()}</span></div>
+          <div class="row"><span>Shop</span><span>${lastOrder?.shopName || selectedShop?.shopName || "—"}</span></div>
+          <div class="row"><span>Payment Method</span><span>${lastOrder?.paymentLabel || "—"}</span></div>
+
+          <hr />
+
+          <table>
+            <tbody>${itemsHtml}</tbody>
+          </table>
+
+          <hr />
+
+          <div class="total-row"><span>Total Paid</span><span>₹${orderTotal}</span></div>
+
+          <p class="footer">
+            ${
+              lastOrder?.deliveryAvailable
+                ? "🚚 Delivery available for this order"
+                : "🏃 Pickup only — no delivery for this order"
+            }
+            <br/>Thank you for shopping with NearbyHub!
+          </p>
+
+          <script>window.onload = () => window.print();</script>
+        </body>
+      </html>
+    `);
+    receiptWindow.document.close();
   };
 
   const navItems = [
@@ -496,6 +715,44 @@ const UserDashboard = ({ onLogout }) => {
           color:white;
           cursor:pointer;
           font-weight:bold;
+        }
+        .input.input-error{
+          border-color:#ef4444;
+          background:#fef2f2;
+        }
+        .field-error-msg{
+          margin:-8px 0 12px 0;
+          font-size:12.5px;
+          color:#ef4444;
+          font-weight:600;
+        }
+        .receipt-box{
+          background:white;
+          border:1px dashed #bbf7d0;
+          border-radius:10px;
+          padding:20px;
+          margin-top:10px;
+          text-align:left;
+        }
+        .receipt-row{
+          display:flex;
+          justify-content:space-between;
+          font-size:14px;
+          color:#374151;
+          margin:6px 0;
+        }
+        .receipt-divider{
+          border:none;
+          border-top:1px dashed #d1d5db;
+          margin:12px 0;
+        }
+        .receipt-total-row{
+          display:flex;
+          justify-content:space-between;
+          font-size:18px;
+          font-weight:bold;
+          color:#111827;
+          margin-top:8px;
         }
       `}</style>
 
@@ -786,38 +1043,82 @@ const UserDashboard = ({ onLogout }) => {
                         <input
                           type="text"
                           name="number"
-                          placeholder="Card Number"
+                          placeholder="Card Number (e.g. 4111 1111 1111 1111)"
                           value={cardDetails.number}
                           onChange={handleCardChange}
-                          className="input"
+                          onBlur={() =>
+                            setPaymentErrors((prev) => ({
+                              ...prev,
+                              number: getCardNumberError(cardDetails.number) || "",
+                            }))
+                          }
+                          className={`input ${paymentErrors.number ? "input-error" : ""}`}
+                          inputMode="numeric"
                         />
+                        {paymentErrors.number && (
+                          <div className="field-error-msg">{paymentErrors.number}</div>
+                        )}
+
                         <input
                           type="text"
                           name="name"
                           placeholder="Name on Card"
                           value={cardDetails.name}
                           onChange={handleCardChange}
-                          className="input"
+                          onBlur={() =>
+                            setPaymentErrors((prev) => ({
+                              ...prev,
+                              name: getCardNameError(cardDetails.name) || "",
+                            }))
+                          }
+                          className={`input ${paymentErrors.name ? "input-error" : ""}`}
                         />
+                        {paymentErrors.name && (
+                          <div className="field-error-msg">{paymentErrors.name}</div>
+                        )}
+
                         <div className="toggle-row">
-                          <input
-                            type="text"
-                            name="expiry"
-                            placeholder="MM/YY"
-                            value={cardDetails.expiry}
-                            onChange={handleCardChange}
-                            className="input"
-                            style={{ flex: 1 }}
-                          />
-                          <input
-                            type="text"
-                            name="cvv"
-                            placeholder="CVV"
-                            value={cardDetails.cvv}
-                            onChange={handleCardChange}
-                            className="input"
-                            style={{ flex: 1 }}
-                          />
+                          <div style={{ flex: 1 }}>
+                            <input
+                              type="text"
+                              name="expiry"
+                              placeholder="MM/YY"
+                              value={cardDetails.expiry}
+                              onChange={handleCardChange}
+                              onBlur={() =>
+                                setPaymentErrors((prev) => ({
+                                  ...prev,
+                                  expiry: getExpiryError(cardDetails.expiry) || "",
+                                }))
+                              }
+                              className={`input ${paymentErrors.expiry ? "input-error" : ""}`}
+                              inputMode="numeric"
+                            />
+                            {paymentErrors.expiry && (
+                              <div className="field-error-msg">{paymentErrors.expiry}</div>
+                            )}
+                          </div>
+
+                          <div style={{ flex: 1 }}>
+                            <input
+                              type="text"
+                              name="cvv"
+                              placeholder="CVV"
+                              value={cardDetails.cvv}
+                              onChange={handleCardChange}
+                              onBlur={() =>
+                                setPaymentErrors((prev) => ({
+                                  ...prev,
+                                  cvv: getCvvError(cardDetails.cvv) || "",
+                                }))
+                              }
+                              className={`input ${paymentErrors.cvv ? "input-error" : ""}`}
+                              inputMode="numeric"
+                            />
+                            {paymentErrors.cvv && (
+                              <div className="field-error-msg">{paymentErrors.cvv}</div>
+                            )}
+                          </div>
                         </div>
                       </>
                     )}
@@ -839,11 +1140,20 @@ const UserDashboard = ({ onLogout }) => {
                           type="text"
                           placeholder={`Enter your ${
                             UPI_APPS.find((a) => a.id === upiApp)?.label || "UPI"
-                          } ID (e.g. name@bank)`}
+                          } ID (e.g. name@okhdfcbank)`}
                           value={upiId}
-                          onChange={(e) => setUpiId(e.target.value)}
-                          className="input"
+                          onChange={handleUpiIdChange}
+                          onBlur={() =>
+                            setPaymentErrors((prev) => ({
+                              ...prev,
+                              upiId: getUpiIdError(upiId) || "",
+                            }))
+                          }
+                          className={`input ${paymentErrors.upiId ? "input-error" : ""}`}
                         />
+                        {paymentErrors.upiId && (
+                          <div className="field-error-msg">{paymentErrors.upiId}</div>
+                        )}
                       </>
                     )}
 
@@ -854,27 +1164,68 @@ const UserDashboard = ({ onLogout }) => {
                 </>
               )}
 
-              {/* ---------------- STEP 4: SUCCESS ---------------- */}
+              {/* ---------------- STEP 4: SUCCESS / RECEIPT ---------------- */}
               {view === "success" && (
                 <div className="success-card">
-                  {/* ── NEW: required success message, shown immediately ── */}
                   <p className="success-msg">
                     ✅ Your order has been placed successfully!
                   </p>
                   <h2 style={{ marginBottom: 15 }}>Order Confirmed</h2>
-                  <p>Amount Paid: ₹{orderTotal}</p>
-                  <p className="shop-detail">
-                    Paid via {lastOrder?.paymentLabel || "—"}
-                  </p>
-                  <p className="shop-detail">
+
+                  {/* ── NEW: itemized bill receipt ── */}
+                  <div className="receipt-box">
+                    <div className="receipt-row">
+                      <span>Order ID</span>
+                      <span>{lastOrder?._id || lastOrder?.id || "—"}</span>
+                    </div>
+                    <div className="receipt-row">
+                      <span>Date</span>
+                      <span>
+                        {lastOrder?.createdAt
+                          ? new Date(lastOrder.createdAt).toLocaleString()
+                          : new Date().toLocaleString()}
+                      </span>
+                    </div>
+                    <div className="receipt-row">
+                      <span>Shop</span>
+                      <span>{lastOrder?.shopName || selectedShop?.shopName || "—"}</span>
+                    </div>
+                    <div className="receipt-row">
+                      <span>Payment Method</span>
+                      <span>{lastOrder?.paymentLabel || "—"}</span>
+                    </div>
+
+                    <hr className="receipt-divider" />
+
+                    {receiptItems.map((item, i) => (
+                      <div key={i} className="receipt-row">
+                        <span>{item.name}</span>
+                        <span>₹{item.price}</span>
+                      </div>
+                    ))}
+
+                    <hr className="receipt-divider" />
+
+                    <div className="receipt-total-row">
+                      <span>Total Paid</span>
+                      <span>₹{orderTotal}</span>
+                    </div>
+                  </div>
+
+                  <p className="shop-detail" style={{ marginTop: 15 }}>
                     {lastOrder?.deliveryAvailable
                       ? "🚚 Delivery available for this order"
                       : "🏃 Pickup only — no delivery for this order"}
                   </p>
                   <p className="shop-detail">
                     The shop has been notified of your order and will get back
-                    to you shortly.
+                    to you shortly. A copy of this receipt has also been saved
+                    to your Order History.
                   </p>
+
+                  <button className="btn" onClick={printReceipt}>
+                    🧾 Print / Download Receipt
+                  </button>
                   <button className="btn" onClick={startNewOrder}>
                     Start New Order
                   </button>
